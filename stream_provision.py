@@ -1,3 +1,4 @@
+import argparse
 import websocket
 import requests
 import json
@@ -13,12 +14,12 @@ DVR_IP = "192.168.68.121"
 DVR_PORT = 51986
 USERNAME = "admin"
 PASSWORD = "chosen04"
-DESIRED_CHANNEL_NUMBER = 1  # Change to desired camera
 
 session_id = None
 ws = None
 channel_uuid = None
 ffmpeg_process = None
+ffplay_started = False  # Track if ffplay was started
 
 def build_channel_uuid(channel_number):
     return f"{{{channel_number:08X}-0000-0000-0000-000000000000}}"
@@ -111,14 +112,26 @@ def on_open2(wsapp):
     send_preview_open(wsapp)
 
 def on_message2(ws, message):
-    global ffmpeg_process
+    global ffmpeg_process, ffplay_started
     if isinstance(message, bytes):
         hevc_data = extract_hevc_from_message(message)
         if hevc_data and ffmpeg_process:
-            print(f"[Binary Frame] Streaming {len(hevc_data)} bytes to ffplay")
+            print(f"[Binary Frame] Streaming {len(hevc_data)} bytes to ffmpeg")
             try:
                 ffmpeg_process.stdin.write(hevc_data)
                 ffmpeg_process.stdin.flush()
+
+                # Launch ffplay on first valid HEVC data
+                if not ffplay_started:
+                    time.sleep(1)
+                    subprocess.Popen(
+                        ["ffplay", "udp://127.0.0.1:12345"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    ffplay_started = True
+                    print("[FFplay] Launched video player")
+
             except Exception as e:
                 print("[FFmpeg] Error writing to stdin:", e)
         else:
@@ -136,6 +149,17 @@ def on_error(wsapp, error):
 
 def on_close(wsapp, code, msg):
     print("[Closed]", code, msg)
+
+# Parse stream index from command line
+parser = argparse.ArgumentParser(description="Stream video from DVR camera")
+parser.add_argument(
+    "camera_index",
+    type=int,
+    choices=range(1, 9),
+    help="camera index (1-8)"
+)
+args = parser.parse_args()
+DESIRED_CHANNEL_NUMBER = args.camera_index
 
 if __name__ == "__main__":
     session_id = login_and_get_session()
